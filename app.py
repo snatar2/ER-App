@@ -5,14 +5,16 @@ Run with:  streamlit run app.py
 """
 
 import io
-import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+import json
 import qrcode
 import streamlit as st
 from PIL import Image
+
+import db
 
 try:
     import speech_recognition as sr
@@ -21,8 +23,8 @@ except ImportError:
     VOICE_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
-# Storage: simple local JSON "database" so the patient app and the ER
-# dashboard can share state during a demo without a real backend.
+# Storage: SQLite (see db.py). Photos still live on local disk, referenced
+# by path — fine for a single-instance demo deployment.
 # ---------------------------------------------------------------------------
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -30,8 +32,7 @@ PHOTO_DIR = DATA_DIR / "photos"
 DATA_DIR.mkdir(exist_ok=True)
 PHOTO_DIR.mkdir(exist_ok=True)
 
-PROFILES_FILE = DATA_DIR / "profiles.json"
-QUEUE_FILE = DATA_DIR / "er_queue.json"
+db.init_db()
 
 SYMPTOMS = [
     "Chest pain",
@@ -67,19 +68,6 @@ HOSPITALS = [
 
 HIGH_RISK_SYMPTOMS = {"Chest pain", "Breathing difficulty", "Bleeding", "Allergic reaction", "Dizziness / fainting"}
 PRIORITY_ORDER = {"Priority": 0, "Standard": 1, "Low": 2}
-
-
-def load_json(path: Path, default):
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            return default
-    return default
-
-
-def save_json(path: Path, data):
-    path.write_text(json.dumps(data, indent=2))
 
 
 def estimate_eta_minutes(distance_miles: float, avg_speed_mph: float) -> int:
@@ -133,8 +121,8 @@ def new_profile_id() -> str:
 
 st.set_page_config(page_title="ER Ready", page_icon="🩺", layout="centered")
 
-profiles = load_json(PROFILES_FILE, {})
-queue = load_json(QUEUE_FILE, [])
+profiles = db.get_all_profiles()
+queue = db.get_queue()
 
 view = st.sidebar.radio(
     "View",
@@ -172,8 +160,7 @@ if view == "Patient app":
         new_name = st.sidebar.text_input("New profile name", key="new_profile_name")
         if st.sidebar.button("Create profile") and new_name.strip():
             pid = new_profile_id()
-            profiles[pid] = {"name": new_name.strip()}
-            save_json(PROFILES_FILE, profiles)
+            db.save_profile(pid, {"name": new_name.strip()})
             st.session_state["active_profile"] = pid
             st.rerun()
         st.info("Add a name and click 'Create profile' to get started.")
@@ -191,8 +178,7 @@ if view == "Patient app":
         st.sidebar.warning(f"Delete all data for **{wallet.get('name', 'this profile')}**? This can't be undone.")
         c1, c2 = st.sidebar.columns(2)
         if c1.button("Yes, delete"):
-            profiles.pop(active_id, None)
-            save_json(PROFILES_FILE, profiles)
+            db.delete_profile(active_id)
             st.session_state.pop("active_profile", None)
             st.session_state.pop("confirm_clear", None)
             st.rerun()
@@ -229,7 +215,7 @@ if view == "Patient app":
 
             submitted = st.form_submit_button("Save wallet")
             if submitted:
-                profiles[active_id] = {
+                wallet = {
                     "name": name,
                     "dob": dob,
                     "emergency_contact": emergency_contact,
@@ -240,8 +226,7 @@ if view == "Patient app":
                     "member_id": member_id,
                     "group_number": group_number,
                 }
-                save_json(PROFILES_FILE, profiles)
-                wallet = profiles[active_id]
+                db.save_profile(active_id, wallet)
                 st.success("Wallet saved.")
 
         if wallet.get("name"):
@@ -362,9 +347,7 @@ if view == "Patient app":
             col_a, col_b = st.columns(2)
             with col_a:
                 if st.button("Send ahead to ER"):
-                    queue = [q for q in queue if q["id"] != entry["id"]]
-                    queue.append(entry)
-                    save_json(QUEUE_FILE, queue)
+                    db.add_to_queue(entry)
                     st.success(f"Sent to {entry['hospital']}. Switch to 'ER dashboard' in the sidebar to see it arrive.")
             with col_b:
                 share_text = (
@@ -384,7 +367,7 @@ else:
     if st.button("Refresh"):
         st.rerun()
 
-    queue = load_json(QUEUE_FILE, [])
+    queue = db.get_queue()
     hospital_filter = st.selectbox("Hospital", ["All"] + [h["name"] for h in HOSPITALS])
     if hospital_filter != "All":
         queue = [q for q in queue if q.get("hospital") == hospital_filter]
@@ -413,5 +396,5 @@ else:
                     st.markdown(f"**{q['priority']}**")
 
         if st.button("Clear queue (demo reset)"):
-            save_json(QUEUE_FILE, [])
+            db.clear_queue()
             st.rerun()

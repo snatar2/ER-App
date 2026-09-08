@@ -30,10 +30,12 @@ ahead — by QR code at check-in or by text to a family member.
   hospital. Not connected to any real hospital system — it's a demo of
   the concept.
 
-Both views (patient app and ER dashboard) read/write small local JSON
-files under `data/` so you can demo the full loop: fill out a wallet,
-generate a summary, hit "Send ahead," then switch to the ER dashboard in
-the sidebar to see the patient appear in the queue.
+Both views (patient app and ER dashboard) read/write a shared SQLite
+database (`data/er_ready.db`) so you can demo the full loop: fill out a
+wallet, generate a summary, hit "Send ahead," then switch to the ER
+dashboard in the sidebar to see the patient appear in the queue. SQLite
+handles multiple people using the deployed app at the same time
+correctly, unlike the earlier prototype's single shared JSON file.
 
 ## Run it
 
@@ -61,6 +63,6 @@ patient can just type the note instead — nothing is blocked by it.
   the patient always reviews it before anything is saved or sent.
 - Hospital distances/ETA are mocked. A real version would use device GPS
   plus a maps/directions API.
-- Wallet data is stored locally in plain JSON for this prototype. A real
-  version would need on-device encrypted storage and, for anything sent
-  off-device, HIPAA-compliant infrastructure.
+- Wallet and queue data are stored in a local SQLite file for this
+  prototype. A real version would need encryption at rest and, for
+  anything sent off-device, HIPAA-compliant infrastructure.
