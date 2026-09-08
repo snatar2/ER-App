@@ -15,10 +15,14 @@ ahead — by QR code at check-in or by text to a family member.
 - **Multiple symptoms + chronic conditions** — captures a fuller clinical
   picture than a single symptom field (e.g. diabetes, heart disease,
   asthma), which matters for how ER staff triage.
-- **Voice input** — record a short voice note instead of typing, useful
-  if your hands are injured (this app was partly inspired by a broken
-  elbow). Requires an internet connection to transcribe; typing always
-  works as a fallback.
+- **Multilingual voice input** — record a voice note in any of 10
+  supported languages (the patient speaks whatever they're most
+  comfortable with, especially useful under stress or if typing is hard
+  due to an injury). The app transcribes it, then machine-translates it
+  to English for the ER — the intake summary shows both the original
+  and the English version, so nothing is lost in translation and the
+  patient can verify accuracy. Requires an internet connection; typing
+  in English always works as a fallback.
 - **Photo attachment** — attach a photo of a visible injury to the
   intake summary.
 - **Real location + ETA** — with permission, the app uses your browser's
@@ -50,12 +54,27 @@ streamlit run app.py
 
 Then open the local URL Streamlit prints (usually `http://localhost:8501`).
 
-### Voice input
+### Voice input & translation
 
 Uses the free Google Web Speech API through the `SpeechRecognition`
-library, which needs an internet connection at runtime. If transcription
-fails (no connection, unclear audio), the app shows a warning and the
-patient can just type the note instead — nothing is blocked by it.
+library for transcription. For translation to English, it tries
+`deep-translator`'s Google backend first, and falls back automatically
+to MyMemory (a different free translation API) if that fails — Google's
+free backend works by scraping its web page rather than a real API, so
+it breaks intermittently (e.g. "No translation was found..." errors),
+and having a second backend makes the feature meaningfully more
+reliable. Both need an internet connection at runtime. If transcription
+fails, the app shows a warning and the patient can type instead. If
+transcription succeeds but both translators fail, the app keeps the
+original-language transcript and shows the underlying error message
+(for debugging) rather than silently losing the note.
+
+**Important:** this is machine translation, not verified for medical
+accuracy. It's meant to get the gist of what's wrong to the ER faster
+than no information at all — not to replace a professional interpreter
+for anything nuanced. The original-language text is always kept and
+shown alongside the English translation so nothing is silently lost or
+misrepresented.
 
 ### Location + ETA
 

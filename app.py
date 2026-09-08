@@ -29,6 +29,12 @@ try:
 except ImportError:
     VOICE_AVAILABLE = False
 
+try:
+    from deep_translator import GoogleTranslator, MyMemoryTranslator
+    TRANSLATE_AVAILABLE = True
+except ImportError:
+    TRANSLATE_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Storage: SQLite (see db.py). Photos still live on local disk, referenced
 # by path — fine for a single-instance demo deployment.
@@ -63,6 +69,24 @@ CHRONIC_CONDITIONS = [
     "Seizure disorder",
     "Prior stroke",
     "Immunocompromised",
+]
+
+# Voice note language options: (display name, speech-recognition language
+# code, translation language code). Speak-in-your-own-language support
+# matters for a diverse area — the patient records in whatever language
+# they're most comfortable in during a stressful moment, and the ER still
+# gets a standardized English summary.
+VOICE_LANGUAGES = [
+    ("English", "en-US", "en"),
+    ("Spanish", "es-US", "es"),
+    ("Mandarin Chinese", "zh-CN", "zh-CN"),
+    ("Vietnamese", "vi-VN", "vi"),
+    ("Tagalog", "fil-PH", "tl"),
+    ("Tamil", "ta-IN", "ta"),
+    ("Hindi", "hi-IN", "hi"),
+    ("Russian", "ru-RU", "ru"),
+    ("Korean", "ko-KR", "ko"),
+    ("Arabic", "ar-SA", "ar"),
 ]
 
 # Hospital options with real coordinates (Greater Sacramento area,
@@ -133,19 +157,58 @@ def priority_from_symptoms_and_pain(symptoms: list, pain: int) -> str:
     return "Low"
 
 
-def transcribe_audio(audio_bytes: bytes) -> str:
-    """Best-effort speech-to-text. Requires an internet connection at
-    runtime (uses a free online recognition service). Always falls back
-    gracefully — the patient can type instead if this doesn't work."""
+def transcribe_audio(audio_bytes: bytes, language_code: str = "en-US") -> str:
+    """Best-effort speech-to-text in the given language. Requires an
+    internet connection at runtime (uses a free online recognition
+    service). Always falls back gracefully — the patient can type instead
+    if this doesn't work."""
     if not VOICE_AVAILABLE:
         return ""
     recognizer = sr.Recognizer()
     try:
         with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
             audio = recognizer.record(source)
-        return recognizer.recognize_google(audio)
+        return recognizer.recognize_google(audio, language=language_code)
     except Exception:
         return ""
+
+
+def translate_to_english(text: str, source_lang_code: str, source_region_code: str = "") -> tuple:
+    """Best-effort machine translation to English, with a fallback backend.
+
+    deep-translator's free Google backend works by scraping Google
+    Translate's web page rather than calling an official API, which
+    breaks intermittently (Google changes page structure, or briefly
+    throttles requests) — a known fragility of the free tool, not
+    something specific to any one setup. So this tries Google first,
+    and if that fails, falls back to MyMemory (a different free
+    translation API) before giving up. Requires an internet connection.
+    Returns (translated_text_or_empty, error_message_or_empty).
+    """
+    if not TRANSLATE_AVAILABLE:
+        return "", "Translation library not installed."
+    if not text.strip() or source_lang_code == "en":
+        return text, ""
+
+    errors = []
+    try:
+        result = GoogleTranslator(source=source_lang_code, target="en").translate(text)
+        if result:
+            return result, ""
+        errors.append("Google: empty result")
+    except Exception as exc:
+        errors.append(f"Google: {exc}")
+
+    try:
+        mm_source = source_region_code or source_lang_code
+        result = MyMemoryTranslator(source=mm_source, target="en-GB").translate(text)
+        if result:
+            return result, ""
+        errors.append("MyMemory: empty result")
+    except Exception as exc:
+        errors.append(f"MyMemory: {exc}")
+
+    return "", "; ".join(errors)
 
 
 def make_qr_image(payload: dict):
@@ -328,20 +391,44 @@ if view == "Patient app":
             note = st.text_area("Type a note (optional)", placeholder="Anything else useful for the ER to know", key="typed_note")
 
             if VOICE_AVAILABLE:
-                st.caption("Or record instead of typing — useful if your hands are injured.")
+                st.caption("Or record instead of typing — useful if your hands are injured. You can speak in any of the languages below; the ER always gets an English summary.")
+                lang_names = [l[0] for l in VOICE_LANGUAGES]
+                lang_idx = st.selectbox("Language you'll speak", range(len(lang_names)), format_func=lambda i: lang_names[i], key="voice_lang")
+                lang_display, lang_speech_code, lang_translate_code = VOICE_LANGUAGES[lang_idx]
+
                 audio = st.audio_input("Record a voice note", key="voice_note")
                 if audio is not None and st.button("Transcribe recording"):
                     with st.spinner("Transcribing..."):
-                        text = transcribe_audio(audio.getvalue())
-                    if text:
-                        st.session_state["voice_transcript"] = text
-                        st.success("Transcribed — added below.")
-                    else:
+                        text = transcribe_audio(audio.getvalue(), lang_speech_code)
+                    if not text:
                         st.warning("Couldn't transcribe that. Check your connection, or just type the note above instead.")
+                    else:
+                        st.session_state["voice_transcript_original"] = text
+                        st.session_state["voice_transcript_lang"] = lang_display
+                        if lang_translate_code == "en":
+                            st.session_state["voice_transcript_en"] = text
+                            st.success("Transcribed — added below.")
+                        else:
+                            with st.spinner("Translating to English for the ER..."):
+                                translated, translate_error = translate_to_english(text, lang_translate_code, lang_speech_code)
+                            if translated:
+                                st.session_state["voice_transcript_en"] = translated
+                                st.success("Transcribed and translated — added below.")
+                            else:
+                                st.session_state["voice_transcript_en"] = ""
+                                st.warning("Transcribed, but translation failed. Your original-language note is saved below — you can also type an English summary above.")
+                                if translate_error:
+                                    st.caption(f"Details (for debugging): {translate_error}")
 
-            transcript = st.session_state.get("voice_transcript", "")
-            if transcript:
-                st.text_area("Transcribed voice note", value=transcript, key="voice_note_display", disabled=True)
+            transcript_original = st.session_state.get("voice_transcript_original", "")
+            transcript_en = st.session_state.get("voice_transcript_en", "")
+            transcript_lang = st.session_state.get("voice_transcript_lang", "")
+            if transcript_original:
+                if transcript_lang and transcript_lang != "English":
+                    st.text_area(f"Your voice note ({transcript_lang})", value=transcript_original, key="voice_note_display_orig", disabled=True)
+                    st.text_area("English translation (sent to ER)", value=transcript_en or "(translation unavailable)", key="voice_note_display_en", disabled=True)
+                else:
+                    st.text_area("Transcribed voice note", value=transcript_original, key="voice_note_display", disabled=True)
 
             st.markdown("**Photo of visible injury (optional)**")
             photo_col1, photo_col2 = st.columns(2)
@@ -357,7 +444,8 @@ if view == "Patient app":
                 else:
                     eta = estimate_eta_minutes(hospital["distance_miles"], hospital["avg_speed_mph"])
                     priority = priority_from_symptoms_and_pain(symptoms, pain)
-                    combined_note = "  ".join(filter(None, [note, transcript]))
+                    combined_note = "  ".join(filter(None, [note, transcript_en]))
+                    original_language_note = transcript_original if (transcript_original and transcript_lang != "English") else ""
 
                     entry_id = str(uuid.uuid4())[:8]
                     photo_path = ""
@@ -380,6 +468,8 @@ if view == "Patient app":
                         "symptoms": symptoms,
                         "pain": pain,
                         "note": combined_note,
+                        "original_language_note": original_language_note,
+                        "note_language": transcript_lang if original_language_note else "",
                         "priority": priority,
                         "hospital": hospital["name"],
                         "eta_minutes": eta,
@@ -387,7 +477,9 @@ if view == "Patient app":
                         "created_at": datetime.now().isoformat(timespec="seconds"),
                     }
                     st.session_state["last_entry"] = entry
-                    st.session_state.pop("voice_transcript", None)
+                    st.session_state.pop("voice_transcript_original", None)
+                    st.session_state.pop("voice_transcript_en", None)
+                    st.session_state.pop("voice_transcript_lang", None)
                     st.success("Intake summary generated — see the next tab.")
 
     # --- Tab 3: Summary + share ----------------------------------------------
@@ -412,7 +504,10 @@ if view == "Patient app":
             st.markdown(f"**Insurance:** {insurance_line}")
             st.markdown(f"**Heading to:** {entry['hospital']}  ·  **Estimated arrival:** ~{entry['eta_minutes']} min")
             if entry["note"]:
-                st.markdown(f"**Note:** {entry['note']}")
+                st.markdown(f"**Note (English, sent to ER):** {entry['note']}")
+            if entry.get("original_language_note"):
+                note_lang_label = entry.get('note_language') or "patient's language"
+                st.markdown(f"**Original ({note_lang_label}):** {entry['original_language_note']}")
             if entry.get("photo_path") and Path(entry["photo_path"]).exists():
                 st.image(entry["photo_path"], caption="Attached photo", width=250)
 
@@ -468,6 +563,9 @@ else:
                         st.caption(f"Chronic conditions: {', '.join(q['chronic_conditions'])}")
                     if q.get("note"):
                         st.caption(f"Note: {q['note']}")
+                    if q.get("original_language_note"):
+                        note_lang_label = q.get('note_language') or "patient's language"
+                        st.caption(f"Original ({note_lang_label}): {q['original_language_note']}")
                     if q.get("photo_path") and Path(q["photo_path"]).exists():
                         st.image(q["photo_path"], width=150)
                 with c2:

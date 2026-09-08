@@ -63,6 +63,8 @@ def init_db():
                 symptoms TEXT DEFAULT '[]',
                 pain INTEGER,
                 note TEXT,
+                original_language_note TEXT DEFAULT '',
+                note_language TEXT DEFAULT '',
                 priority TEXT,
                 hospital TEXT,
                 eta_minutes INTEGER,
@@ -70,6 +72,13 @@ def init_db():
                 created_at TEXT
             )
         """)
+        # Lightweight migration for anyone who already deployed the schema
+        # before the multilingual voice note fields existed.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(queue)").fetchall()}
+        if "original_language_note" not in existing_cols:
+            conn.execute("ALTER TABLE queue ADD COLUMN original_language_note TEXT DEFAULT ''")
+        if "note_language" not in existing_cols:
+            conn.execute("ALTER TABLE queue ADD COLUMN note_language TEXT DEFAULT ''")
 
 
 # ---------------------------------------------------------------------------
@@ -143,23 +152,29 @@ def add_to_queue(entry: dict):
         conn.execute("""
             INSERT INTO queue (id, profile_id, name, dob, allergies, medications, chronic_conditions,
                                 insurance, member_id, group_number, emergency_contact, symptoms, pain,
-                                note, priority, hospital, eta_minutes, photo_path, created_at)
+                                note, original_language_note, note_language, priority, hospital,
+                                eta_minutes, photo_path, created_at)
             VALUES (:id, :profile_id, :name, :dob, :allergies, :medications, :chronic_conditions,
                     :insurance, :member_id, :group_number, :emergency_contact, :symptoms, :pain,
-                    :note, :priority, :hospital, :eta_minutes, :photo_path, :created_at)
+                    :note, :original_language_note, :note_language, :priority, :hospital,
+                    :eta_minutes, :photo_path, :created_at)
             ON CONFLICT(id) DO UPDATE SET
                 profile_id=excluded.profile_id, name=excluded.name, dob=excluded.dob,
                 allergies=excluded.allergies, medications=excluded.medications,
                 chronic_conditions=excluded.chronic_conditions, insurance=excluded.insurance,
                 member_id=excluded.member_id, group_number=excluded.group_number,
                 emergency_contact=excluded.emergency_contact, symptoms=excluded.symptoms,
-                pain=excluded.pain, note=excluded.note, priority=excluded.priority,
+                pain=excluded.pain, note=excluded.note,
+                original_language_note=excluded.original_language_note,
+                note_language=excluded.note_language, priority=excluded.priority,
                 hospital=excluded.hospital, eta_minutes=excluded.eta_minutes,
                 photo_path=excluded.photo_path, created_at=excluded.created_at
         """, {
             **entry,
             "chronic_conditions": json.dumps(entry.get("chronic_conditions", [])),
             "symptoms": json.dumps(entry.get("symptoms", [])),
+            "original_language_note": entry.get("original_language_note", ""),
+            "note_language": entry.get("note_language", ""),
         })
 
 

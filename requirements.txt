@@ -3,4 +3,5 @@ qrcode
 pillow
 SpeechRecognition
 streamlit-geolocation
+deep-translator>=1.11.4
 audioop-lts; python_version >= "3.13"
