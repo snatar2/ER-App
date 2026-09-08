@@ -1,7 +1,7 @@
 """
 db.py — SQLite storage for ER Ready.
 
-Replaces the earlier local-JSON-file storage. Two tables:
+Two tables:
   - profiles: one row per health wallet profile
   - queue: one row per "sent ahead" intake summary
 

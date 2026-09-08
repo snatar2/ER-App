@@ -21,6 +21,10 @@ ahead — by QR code at check-in or by text to a family member.
   works as a fallback.
 - **Photo attachment** — attach a photo of a visible injury to the
   intake summary.
+- **Real location + ETA** — with permission, the app uses your browser's
+  location to calculate actual distance and estimated arrival time to
+  each hospital, sorted nearest first. Falls back to default distances
+  if location isn't shared.
 - **Multi-hospital selection** — choose which ER you're headed to,
   rather than assuming the nearest one.
 - **Clear my data** — delete a profile's stored data entirely, from the
@@ -53,6 +57,23 @@ library, which needs an internet connection at runtime. If transcription
 fails (no connection, unclear audio), the app shows a warning and the
 patient can just type the note instead — nothing is blocked by it.
 
+### Location + ETA
+
+Uses the `streamlit-geolocation` component, which asks the browser for
+permission the first time. Distance to each hospital is calculated with
+the haversine formula (straight-line distance) and adjusted by a fixed
+factor to approximate real driving distance, since this doesn't use a
+paid maps/directions API. If location access is denied or unavailable,
+the hospital list falls back to fixed default distances.
+
+**If distances look wrong on a laptop/desktop:** this is almost always
+the browser's location accuracy, not the app's math. Desktops/laptops
+usually lack a GPS chip, so the browser estimates location from nearby
+WiFi networks and IP address — which can be off by several miles. Phones
+use real GPS and are much more accurate. The app shows the detected
+coordinates under "Using your location" so you can check them against
+a map (e.g. Google Maps) to confirm whether the location itself is off.
+
 ## Notes on scope
 
 - The priority label on the ER dashboard is a simple, transparent
@@ -61,8 +82,17 @@ patient can just type the note instead — nothing is blocked by it.
   call. This only pre-fills what the nurse sees.
 - Voice transcription is a best-effort read, never a source of truth —
   the patient always reviews it before anything is saved or sent.
-- Hospital distances/ETA are mocked. A real version would use device GPS
-  plus a maps/directions API.
+- Hospital coordinates and driving-distance approximation are for demo
+  purposes. The list currently covers 6 real Sacramento/Folsom/Roseville
+  hospitals — enough to be sensible for that region, but still a fixed
+  list, not a live search. A real version would use a maps/places API to
+  find whatever hospitals are actually nearest to the patient, anywhere.
+- There's no access control on wallet data in this prototype — anyone
+  using the app on a given device/deployment can view or edit any
+  profile. A real deployment would need proper authentication; this was
+  deliberately left out of the prototype so nothing could block the
+  core emergency flow (see the "Heading to ER" tab) for someone who
+  isn't the patient themselves.
 - Wallet and queue data are stored in a local SQLite file for this
   prototype. A real version would need encryption at rest and, for
   anything sent off-device, HIPAA-compliant infrastructure.

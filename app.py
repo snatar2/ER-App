@@ -5,6 +5,7 @@ Run with:  streamlit run app.py
 """
 
 import io
+import math
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,12 @@ import streamlit as st
 from PIL import Image
 
 import db
+
+try:
+    from streamlit_geolocation import streamlit_geolocation
+    GEO_AVAILABLE = True
+except ImportError:
+    GEO_AVAILABLE = False
 
 try:
     import speech_recognition as sr
@@ -58,13 +65,26 @@ CHRONIC_CONDITIONS = [
     "Immunocompromised",
 ]
 
-# Mocked hospital options — a real version would pull nearby ERs from a
-# maps/directions API based on live device location.
+# Hospital options with real coordinates (Greater Sacramento area,
+# verified via public sources — a mix of Sacramento, Folsom, and Roseville
+# so nearby patients aren't always shown only downtown Sacramento options).
+# A real version would pull live nearby ERs from a maps/places API based on
+# the patient's actual location rather than a fixed list like this.
 HOSPITALS = [
-    {"name": "Mercy General ER", "distance_miles": 4.2, "avg_speed_mph": 28},
-    {"name": "Sutter Medical Center ER", "distance_miles": 6.8, "avg_speed_mph": 30},
-    {"name": "UC Davis Medical Center ER", "distance_miles": 9.1, "avg_speed_mph": 32},
+    {"name": "Mercy General ER (Sacramento)", "lat": 38.5706, "lon": -121.4529, "distance_miles": 4.2, "avg_speed_mph": 28},
+    {"name": "Sutter Medical Center ER (Sacramento)", "lat": 38.5708, "lon": -121.4696, "distance_miles": 6.8, "avg_speed_mph": 30},
+    {"name": "UC Davis Medical Center ER (Sacramento)", "lat": 38.5531, "lon": -121.4525, "distance_miles": 9.1, "avg_speed_mph": 32},
+    {"name": "Mercy Hospital of Folsom ER", "lat": 38.6712, "lon": -121.1622, "distance_miles": 3.0, "avg_speed_mph": 28},
+    {"name": "Sutter Roseville Medical Center ER", "lat": 38.7599, "lon": -121.2508, "distance_miles": 8.0, "avg_speed_mph": 30},
+    {"name": "Kaiser Permanente Roseville ER", "lat": 38.7454, "lon": -121.2726, "distance_miles": 9.5, "avg_speed_mph": 30},
 ]
+
+# Straight-line (as-the-crow-flies) distance undercounts real driving
+# distance, since roads aren't straight. This fudge factor and flat speed
+# assumption approximate driving distance/time without needing a paid
+# maps/directions API.
+ROAD_DISTANCE_FACTOR = 1.3
+ASSUMED_AVG_SPEED_MPH = 27
 
 HIGH_RISK_SYMPTOMS = {"Chest pain", "Breathing difficulty", "Bleeding", "Allergic reaction", "Dizziness / fainting"}
 PRIORITY_ORDER = {"Priority": 0, "Standard": 1, "Low": 2}
@@ -73,6 +93,31 @@ PRIORITY_ORDER = {"Priority": 0, "Standard": 1, "Low": 2}
 def estimate_eta_minutes(distance_miles: float, avg_speed_mph: float) -> int:
     hours = distance_miles / avg_speed_mph
     return max(1, round(hours * 60))
+
+
+def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Straight-line distance between two lat/lon points, in miles."""
+    r = 3958.8  # Earth's radius in miles
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def hospitals_with_live_distance(patient_lat: float, patient_lon: float) -> list:
+    """Returns HOSPITALS sorted nearest-first, with distance/ETA computed
+    from the patient's real coordinates instead of the fixed mock values."""
+    results = []
+    for h in HOSPITALS:
+        straight_line = haversine_miles(patient_lat, patient_lon, h["lat"], h["lon"])
+        road_distance = straight_line * ROAD_DISTANCE_FACTOR
+        results.append({
+            **h,
+            "distance_miles": round(road_distance, 1),
+            "avg_speed_mph": ASSUMED_AVG_SPEED_MPH,
+        })
+    return sorted(results, key=lambda h: h["distance_miles"])
 
 
 def priority_from_symptoms_and_pain(symptoms: list, pain: int) -> str:
@@ -158,11 +203,14 @@ if view == "Patient app":
 
     if selected == "__new__":
         new_name = st.sidebar.text_input("New profile name", key="new_profile_name")
-        if st.sidebar.button("Create profile") and new_name.strip():
-            pid = new_profile_id()
-            db.save_profile(pid, {"name": new_name.strip()})
-            st.session_state["active_profile"] = pid
-            st.rerun()
+        if st.sidebar.button("Create profile"):
+            if not new_name.strip():
+                st.sidebar.error("Enter a name.")
+            else:
+                pid = new_profile_id()
+                db.save_profile(pid, {"name": new_name.strip()})
+                st.session_state["active_profile"] = pid
+                st.rerun()
         st.info("Add a name and click 'Create profile' to get started.")
         st.stop()
     else:
@@ -242,9 +290,39 @@ if view == "Patient app":
             symptoms = st.multiselect("Symptoms (select all that apply)", SYMPTOMS)
             pain = st.slider("Pain level", min_value=1, max_value=10, value=5)
 
-            hospital_names = [h["name"] for h in HOSPITALS]
-            hospital_choice = st.selectbox("Which ER are you headed to?", hospital_names)
-            hospital = next(h for h in HOSPITALS if h["name"] == hospital_choice)
+            st.markdown("**Which ER are you headed to?**")
+            hospital_list = HOSPITALS
+            location_used = False
+
+            if GEO_AVAILABLE:
+                st.caption("Share your location for a real distance/ETA, sorted nearest first — or skip and pick manually below.")
+                location = streamlit_geolocation()
+                if location and location.get("latitude") and location.get("longitude"):
+                    hospital_list = hospitals_with_live_distance(location["latitude"], location["longitude"])
+                    location_used = True
+                    st.success(f"Using your location — hospitals sorted by real distance.")
+                    st.caption(
+                        f"Detected coordinates: {location['latitude']:.4f}, {location['longitude']:.4f} "
+                        "— check this against your actual location on a map if distances look off. "
+                        "Laptops/desktops often estimate location from WiFi/IP rather than GPS, which "
+                        "can be off by several miles; phones are usually much more accurate."
+                    )
+                else:
+                    st.caption("No location shared yet — showing default distances below.")
+
+            hospital_labels = [
+                f"{h['name']}  ·  ~{h['distance_miles']} mi  ·  ~{estimate_eta_minutes(h['distance_miles'], h['avg_speed_mph'])} min"
+                for h in hospital_list
+            ]
+            hospital_idx = st.selectbox(
+                "Hospital",
+                range(len(hospital_list)),
+                format_func=lambda i: hospital_labels[i],
+                label_visibility="collapsed",
+            )
+            hospital = hospital_list[hospital_idx]
+            if not location_used:
+                st.caption("Distances above are defaults, not your real location.")
 
             st.markdown("**Describe what's wrong**")
             note = st.text_area("Type a note (optional)", placeholder="Anything else useful for the ER to know", key="typed_note")
